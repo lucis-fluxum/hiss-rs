@@ -10,6 +10,8 @@ pub struct Version {
     // TODO: Local version segment
 }
 
+// TODO: We're not handling pre-release segments correctly. Might be better to just call into the
+// packaging library using PyO3
 impl Version {
     pub fn new(
         epoch: usize,
