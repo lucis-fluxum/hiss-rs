@@ -1,134 +1,131 @@
 use std::{cmp::Ordering, fmt};
 
-#[derive(Debug, Clone, Eq, Ord)]
+use pyo3::{PyAny, PyResult, Python};
+
+#[derive(Debug, Clone)]
 pub struct Version {
-    epoch: usize,
-    release: Vec<usize>,
-    pre_release: Option<usize>,
-    post_release: Option<usize>,
-    dev_release: Option<usize>,
-    // TODO: Local version segment
+    string: String,
 }
 
-// TODO: We're not handling pre-release segments correctly. Might be better to just call into the
-// packaging library using PyO3
 impl Version {
-    pub fn new(
-        epoch: usize,
-        release: Vec<usize>,
-        pre_release: Option<usize>,
-        post_release: Option<usize>,
-        dev_release: Option<usize>,
-    ) -> Self {
-        Self {
-            epoch,
-            release,
-            pre_release,
-            post_release,
-            dev_release,
-        }
+    pub fn new(version: &str) -> PyResult<Self> {
+        Python::with_gil(|py| {
+            Ok(Version {
+                string: py
+                    .import("packaging.version")?
+                    .get("Version")?
+                    .call1((version,))?
+                    .str()?
+                    .extract()?,
+            })
+        })
     }
 
     pub fn zero() -> Self {
-        Version::new(0, vec![0], None, None, None)
-    }
-
-    // See https://github.com/pypa/packaging/blob/master/packaging/version.py#L495-L556
-    // for how we generate this key.
-    fn compare_key(&self) -> (usize, Vec<usize>, i64, i64, i64) {
-        // Remove trailing zeros from release
-        let mut release: Vec<usize> = self
-            .release
-            .iter()
-            .copied()
-            .rev()
-            .skip_while(|&n| n == 0)
-            .collect();
-        release.reverse();
-
-        let pre_release = match (self.pre_release, self.post_release, self.dev_release) {
-            (None, None, Some(_)) => i64::MIN,
-            (None, _, _) => i64::MAX,
-            // TODO: Technically this could overflow
-            (Some(n), _, _) => n as i64,
-        };
-
-        let post_release = match self.post_release {
-            // TODO: Technically this could overflow
-            Some(n) => n as i64,
-            None => i64::MIN,
-        };
-
-        let dev_release = match self.dev_release {
-            // TODO: Technically this could overflow
-            Some(n) => n as i64,
-            None => i64::MAX,
-        };
-
-        // TODO: Local version compare key
-
-        (self.epoch, release, pre_release, post_release, dev_release)
+        Version::new("0").unwrap()
     }
 }
 
-impl fmt::Display for Version {
+impl<'p> fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let epoch = if self.epoch == 0 {
-            String::new()
-        } else {
-            format!("{}!", self.epoch)
-        };
-        let release: Vec<String> = self.release.iter().map(|n| n.to_string()).collect();
-        let pre = self
-            .pre_release
-            .map(|n| format!(".pre{}", n))
-            .unwrap_or_default();
-        let post = self
-            .post_release
-            .map(|n| format!(".post{}", n))
-            .unwrap_or_default();
-        let dev = self
-            .dev_release
-            .map(|n| format!(".dev{}", n))
-            .unwrap_or_default();
-        f.write_fmt(format_args!(
-            "{}{}{}{}{}",
-            epoch,
-            release.join("."),
-            pre,
-            post,
-            dev
-        ))
+        f.write_str(&self.string)
     }
 }
 
-impl PartialEq for Version {
+impl<'p> PartialEq for Version {
     fn eq(&self, other: &Self) -> bool {
-        self.compare_key() == other.compare_key()
+        Python::with_gil(|py: Python| {
+            py.run("from packaging.version import Version", None, None)
+                .unwrap();
+            py.eval(
+                &format!("Version('{}') == Version('{}')", self.string, other.string),
+                None,
+                None,
+            )
+            .unwrap()
+            .extract()
+            .unwrap()
+        })
     }
 }
+impl<'p> Eq for Version {}
 
-impl PartialOrd for Version {
+impl<'p> PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.compare_key().partial_cmp(&other.compare_key())
+        Python::with_gil(|py: Python| {
+            py.run("from packaging.version import Version", None, None)
+                .unwrap();
+            let (this, that): (&PyAny, &PyAny) = py
+                .eval(
+                    &format!("(Version('{}'), Version('{}'))", self.string, other.string),
+                    None,
+                    None,
+                )
+                .unwrap()
+                .extract()
+                .unwrap();
+            Some(this.compare(that).unwrap())
+        })
+    }
+}
+impl<'p> Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
     }
 }
 
-impl pubgrub::version::Version for Version {
+impl<'p> pubgrub::version::Version for Version {
     fn lowest() -> Self {
         Version::zero()
     }
 
     fn bump(&self) -> Self {
-        let mut release = self.release.clone();
-        *release.last_mut().unwrap() += 1;
-        Version::new(
-            self.epoch,
-            release,
-            self.pre_release,
-            self.post_release,
-            self.dev_release,
-        )
+        Python::with_gil(|py: Python| {
+            py.run("from packaging.version import Version", None, None)
+                .unwrap();
+            py.run(&format!("v = Version('{}')", self.string), None, None)
+                .unwrap();
+            let (epoch, mut release, pre_release, post_release, dev_release, local_version): (
+                usize,
+                Vec<usize>,
+                Option<(String, usize)>,
+                Option<(String, usize)>,
+                Option<(String, usize)>,
+                Option<String>,
+            ) = py
+                .eval(
+                    "(v.epoch, v.release, v.pre, v.post, v.dev, v.local)",
+                    None,
+                    None,
+                )
+                .unwrap()
+                .extract()
+                .unwrap();
+
+            *release.last_mut().unwrap() += 1;
+            let release = release
+                .into_iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<String>>()
+                .join(".");
+
+            Version::new(&format!(
+                "{}!{}{}{}{}{}",
+                epoch,
+                release,
+                pre_release
+                    .map(|(s, n)| format!("{}{}", s, n))
+                    .unwrap_or_default(),
+                post_release
+                    .map(|(s, n)| format!(".{}{}", s, n))
+                    .unwrap_or_default(),
+                dev_release
+                    .map(|(s, n)| format!(".{}{}", s, n))
+                    .unwrap_or_default(),
+                local_version.unwrap_or_default()
+            ))
+            .unwrap()
+        })
     }
 }
 
@@ -138,40 +135,40 @@ mod tests {
 
     #[test]
     fn display_test() {
-        let version = Version::new(2, vec![1, 2, 3], Some(3), Some(4), Some(1));
+        let version = Version::new("2!1.2.3pre3.rev4.dev1").unwrap();
         assert_eq!(
             format!("{}", version),
-            String::from("2!1.2.3.pre3.post4.dev1")
+            String::from("2!1.2.3rc3.post4.dev1")
         );
         assert_eq!(format!("{}", Version::zero()), String::from("0"));
     }
 
     #[test]
     fn equality_test() {
-        let left = Version::new(0, vec![0, 1], None, None, None);
-        let right = Version::new(0, vec![0, 1, 0, 0, 0, 0], None, None, None);
+        let left = Version::new("0.1").unwrap();
+        let right = Version::new("0.1.0.0.0.0").unwrap();
         assert_eq!(left, right);
 
-        let random = Version::new(2, vec![1, 2, 3], Some(3), Some(4), Some(1));
+        let random = Version::new("2!1.2.3pre3.post4.dev1").unwrap();
         assert_eq!(random, random);
     }
 
     #[test]
     fn version_impl_test() {
-        let version = Version::new(0, vec![0, 1], None, None, None);
+        let version = Version::new("0.1.3").unwrap();
         assert_eq!(
             pubgrub::version::Version::bump(&version),
-            Version::new(0, vec![0, 2], None, None, None)
+            Version::new("0.1.4").unwrap()
         );
     }
 
     #[test]
     fn compare_test() {
-        let v0_1 = Version::new(0, vec![0, 1], None, None, None);
-        let v0_1_pre1 = Version::new(0, vec![0, 1], Some(1), None, None);
-        let v0_1_post2 = Version::new(0, vec![0, 1], None, Some(2), None);
-        let v0_1_dev3 = Version::new(0, vec![0, 1], None, None, Some(3));
-        let v0_2_0_0 = Version::new(0, vec![0, 2, 0, 0], None, None, None);
+        let v0_1 = Version::new("0.1").unwrap();
+        let v0_1_pre1 = Version::new("0.1a1").unwrap();
+        let v0_1_post2 = Version::new("0.1.post2").unwrap();
+        let v0_1_dev3 = Version::new("0.1.dev3").unwrap();
+        let v0_2_0_0 = Version::new("0.2.0.0").unwrap();
 
         assert!(v0_1 < v0_2_0_0);
         assert!(v0_2_0_0 >= v0_1);
