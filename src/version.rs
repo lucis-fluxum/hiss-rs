@@ -1,22 +1,21 @@
 use std::{cmp::Ordering, fmt};
 
-use pyo3::{PyAny, PyResult, Python};
+use pyo3::{prelude::*, types::IntoPyDict};
 
 #[derive(Debug, Clone)]
 pub struct Version {
-    string: String,
+    inner: PyObject,
 }
 
 impl Version {
     pub fn new(version: &str) -> PyResult<Self> {
         Python::with_gil(|py| {
             Ok(Version {
-                string: py
+                inner: py
                     .import("packaging.version")?
                     .get("Version")?
                     .call1((version,))?
-                    .str()?
-                    .extract()?,
+                    .to_object(py),
             })
         })
     }
@@ -28,23 +27,22 @@ impl Version {
 
 impl<'p> fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.string)
+        let string = Python::with_gil(|py| {
+            self.inner
+                .as_ref(py)
+                .call_method0("__str__")
+                .unwrap()
+                .extract::<String>()
+                .unwrap()
+        });
+        f.write_str(&string)
     }
 }
 
 impl<'p> PartialEq for Version {
     fn eq(&self, other: &Self) -> bool {
         Python::with_gil(|py: Python| {
-            py.run("from packaging.version import Version", None, None)
-                .unwrap();
-            py.eval(
-                &format!("Version('{}') == Version('{}')", self.string, other.string),
-                None,
-                None,
-            )
-            .unwrap()
-            .extract()
-            .unwrap()
+            self.inner.as_ref(py).compare(&other.inner).unwrap() == Ordering::Equal
         })
     }
 }
@@ -52,20 +50,7 @@ impl<'p> Eq for Version {}
 
 impl<'p> PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Python::with_gil(|py: Python| {
-            py.run("from packaging.version import Version", None, None)
-                .unwrap();
-            let (this, that): (&PyAny, &PyAny) = py
-                .eval(
-                    &format!("(Version('{}'), Version('{}'))", self.string, other.string),
-                    None,
-                    None,
-                )
-                .unwrap()
-                .extract()
-                .unwrap();
-            Some(this.compare(that).unwrap())
-        })
+        Python::with_gil(|py: Python| Some(self.inner.as_ref(py).compare(&other.inner).unwrap()))
     }
 }
 impl<'p> Ord for Version {
@@ -81,10 +66,6 @@ impl<'p> pubgrub::version::Version for Version {
 
     fn bump(&self) -> Self {
         Python::with_gil(|py: Python| {
-            py.run("from packaging.version import Version", None, None)
-                .unwrap();
-            py.run(&format!("v = Version('{}')", self.string), None, None)
-                .unwrap();
             let (epoch, mut release, pre_release, post_release, dev_release, local_version): (
                 usize,
                 Vec<usize>,
@@ -96,7 +77,7 @@ impl<'p> pubgrub::version::Version for Version {
                 .eval(
                     "(v.epoch, v.release, v.pre, v.post, v.dev, v.local)",
                     None,
-                    None,
+                    Some([("v", self.inner.as_ref(py))].into_py_dict(py)),
                 )
                 .unwrap()
                 .extract()
