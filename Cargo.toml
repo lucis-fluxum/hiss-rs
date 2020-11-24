@@ -10,5 +10,5 @@ edition = "2018"
 [dependencies]
 pubgrub = "0.2.0"
 pyo3 = { git = "https://github.com/PyO3/pyo3" }
-# reqwest = { version = "0.10.9", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# serde_json = "1.0.59"
+reqwest = { version = "0.10.9", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1.0.59"
